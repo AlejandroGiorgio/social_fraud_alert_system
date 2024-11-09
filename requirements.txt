@@ -1,0 +1,21 @@
+# Core dependencies
+langchain==0.1.12
+langchain-core==0.1.33
+langchain-community==0.0.28
+langgraph==0.0.27
+sentence-transformers==2.5.1
+numpy==1.26.4
+pydantic>=2.6.3,<3.0.0
+
+# LLM and embeddings
+ollama==0.1.7
+
+# Utility packages
+python-dateutil==2.8.2
+typing-extensions==4.9.0
+
+# Development and testing
+pytest==8.0.2
+black==24.2.0
+ruff==0.3.0
+mypy==1.8.0
