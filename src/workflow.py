@@ -5,10 +5,10 @@ from langgraph.graph import StateGraph, END
 from datetime import datetime
 from pydantic import BaseModel
 
-from nodes.receiver import TextPreprocessor, TextInput
-from nodes.encoder import TextEncoder
-from nodes.curator import CuratorAgent, FraudAnalysis
-from nodes.utils import EmbeddingStorage, FraudTypeRegistry
+from src.nodes.receiver import TextPreprocessor, TextInput
+from src.nodes.encoder import TextEncoder
+from src.nodes.curator import CuratorAgent, FraudAnalysis
+from src.nodes.utils import EmbeddingStorage, FraudTypeRegistry
 
 # Define state types using Pydantic for better validation
 class WorkflowState(BaseModel):
@@ -144,8 +144,7 @@ def create_workflow(
             
         analysis = curator.analyze_case(
             state.text_input,
-            state.similar_cases or [],
-            type_registry.get_types()
+            state.similar_cases or []
         )
         
         # Store results if fraud detected
@@ -159,7 +158,6 @@ def create_workflow(
                 {
                     "text": state.text_input.text,
                     "fraud_type": analysis.fraud_type,
-                    "confidence": analysis.confidence,
                     "timestamp": datetime.now().isoformat(),
                     "similar_cases_count": len(state.similar_cases or []),
                     "case_id": case_id
@@ -182,6 +180,7 @@ def create_workflow(
     
     def analyze_similar(state: dict) -> dict:
         """Quick analysis based on similar cases with enhanced logic."""
+
         state = WorkflowState.model_validate(state)
         similar_cases = state.similar_cases or []
         
@@ -191,7 +190,6 @@ def create_workflow(
         # Enhanced analysis logic
         if state.embeddings and state.embeddings.get("similar"):
             similarities = [case["similarity"] for case in state.embeddings["similar"]]
-            avg_similarity = sum(similarities) / len(similarities)
             
             # Determine fraud type based on similar cases
             fraud_types = [
@@ -204,7 +202,6 @@ def create_workflow(
             
             analysis = FraudAnalysis(
                 is_fraud=True,
-                confidence=avg_similarity,
                 fraud_type=most_common_type,
                 explanation=f"Similar to {len(similar_cases)} known fraud cases of type {most_common_type}",
                 similar_cases=similar_cases,
@@ -213,7 +210,6 @@ def create_workflow(
         else:
             analysis = FraudAnalysis(
                 is_fraud=False,
-                confidence=0.0,
                 fraud_type=None,
                 explanation="Insufficient similarity data",
                 similar_cases=similar_cases,
@@ -295,7 +291,6 @@ def run_fraud_detection(
         # Return results
         return {
             "is_fraud": final_state.analysis.is_fraud if final_state.analysis else False,
-            "confidence": final_state.analysis.confidence if final_state.analysis else 0.0,
             "fraud_type": final_state.analysis.fraud_type if final_state.analysis else None,
             "explanation": final_state.analysis.explanation if final_state.analysis else "",
             "should_alert": final_state.should_alert,
@@ -307,7 +302,6 @@ def run_fraud_detection(
         return {
             "error": str(e),
             "is_fraud": False,
-            "confidence": 0.0,
             "fraud_type": None,
             "explanation": "Error processing case",
             "should_alert": False,

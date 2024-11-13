@@ -1,7 +1,7 @@
 from typing import List, Union, Dict
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from receiver import TextInput
+from src.nodes.receiver import TextInput
 
 class TextEncoder:
     """Class for encoding text into embeddings using SBERT."""
