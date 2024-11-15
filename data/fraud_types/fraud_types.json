@@ -1,0 +1,9 @@
+{
+    "fraud_types": [
+        "PHISHING",
+        "IDENTITY_THEFT",
+        "FINANCIAL_SCAM",
+        "IMPERSONATION",
+        "DATA_BREACH"
+    ]
+}
