@@ -8,12 +8,10 @@ from langchain_core.prompts import (
     ChatPromptTemplate,
 )
 from langgraph.graph import StateGraph, END
-import os
 import json
-from tenacity import retry, stop_after_attempt, wait_exponential
 from src.nodes.utils import FraudTypeRegistry
 from src.settings import Settings
-import ast
+from langchain_core.messages import BaseMessage
 
 setting = Settings()
 
@@ -73,101 +71,101 @@ def post_response(input_data: PostResponseInput) -> Dict:
 
 # Agent base class with retry logic
 class BaseAgent:
-    output_model: Type[BaseModel] = None  # Cada hijo debe definir su modelo de salida
+    output_model: Type[BaseModel] = None
     
     def __init__(self, llm: ChatOpenAI):
         if not self.output_model:
             raise ValueError("output_model must be defined in child class")
             
         self.llm = llm
+        
+        # Definir la tool con el schema exacto
         self.tools = [
             {
                 "type": "function",
                 "function": {
                     "name": "post_response",
-                    "description": "Post a response in the correct format according to the specified model",
-                    "parameters": self.output_model.model_json_schema()  # Usa el schema del modelo específico
+                    "description": "Format and validate the response according to the required schema",
+                    "parameters": self.output_model.model_json_schema()
                 }
             }
         ]
+        
+        # Configurar el LLM para forzar el uso de la función post_response
+        self.llm = llm.bind(
+            tools=self.tools,
+            tool_choice={"type": "function", "function": {"name": "post_response"}}
+        )
 
-    def _validate_and_parse_response(self, response: str) -> Any:
-        """Now uses the child's specific output_model."""
+    def _validate_and_parse_response(self, response: BaseMessage) -> Dict:
+        """Valida y parsea la respuesta del LLM."""
         try:
-
-             # Reemplazar comillas simples por dobles para cumplir con el estándar JSON
-            if isinstance(response, str):
-                response = response.replace("'", '"')
-
-            response_dict = json.loads(response) if isinstance(response, str) else response
-
-            return post_response(PostResponseInput(content=response_dict, model=self.output_model))
+            # La respuesta ahora siempre vendrá en tool_calls
+            if not response.additional_kwargs.get('tool_calls'):
+                raise ValueError("No tool calls found in response")
+                
+            # Obtener los argumentos de la función
+            function_args = json.loads(response.additional_kwargs['tool_calls'][0]['function']['arguments'])
+            
+            # Validar con el modelo Pydantic
+            validated_data = self.output_model.model_validate(function_args)
+            
+            return validated_data.model_dump()
+            
         except Exception as e:
-            print(f"Validation error: {e}. Retrying...")
+            print(f"Error en la validación: {str(e)}")
+            print(f"Respuesta original: {response}")
             raise e
 
 
 
-# Specific agents for each task
 class PatternAnalysisAgent(BaseAgent):
-
     output_model = PatternAnalysisOutput
 
     def __init__(self, llm: ChatOpenAI):
         super().__init__(llm)
-        self.prompt = ChatPromptTemplate.from_messages(
-            [
-                SystemMessagePromptTemplate.from_template(
-                    "You are a fraud detection expert. Analyze the provided text for potential fraud patterns. "
-                    "First you must determine if the case is fraud. "
-                    "If it is fraud, provide a brief reasoning and list of patterns detected. "
-                    "Use the 'post_response' tool to format your response with the following structure: "
-                    "'is_fraud': boolean, 'patterns': [string], 'reasoning': string"
-                ),
-                HumanMessagePromptTemplate.from_template(
-                    """Analyze this text for potential fraud patterns:
+        self.prompt = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(
+                """You are a fraud detection expert. Analyze the provided text for potential fraud patterns.
+                Your analysis should determine:
+                - If the case is fraud (is_fraud)
+                - The specific patterns detected (patterns)
+                - A clear reasoning explaining your determination (reasoning)"""
+            ),
+            HumanMessagePromptTemplate.from_template(
+                """Analyze this text for potential fraud patterns:
                 Text: {text}
                 
                 Similar cases for reference:
                 {similar_cases}"""
-                ),
-            ]
-        )
+            )
+        ])
 
     def analyze(self, text: str, similar_cases: List[str]) -> PatternAnalysisOutput:
         response = self.llm.invoke(
             self.prompt.format_messages(text=text, similar_cases=similar_cases)
         )
-        print("RESPONSE FROM PATTERNANALYSISAGENT", response)
-        return self._validate_and_parse_response(
-            response.content
-        )
-
+        return self._validate_and_parse_response(response)
 
 class FraudTypeAgent(BaseAgent):
-
     output_model = FraudTypeOutput
 
     def __init__(self, llm: ChatOpenAI, type_registry: "FraudTypeRegistry"):
         super().__init__(llm)
         self.type_registry = type_registry
-        self.prompt = ChatPromptTemplate.from_messages(
-            [
-                SystemMessagePromptTemplate.from_template(
-                    "You are a fraud classification expert. Classify the provided fraud pattern into known categories. "
-                    "You must classify the pattern into known fraud types."
-                    "If it's a new type, you must stablish the fraud type as 'NEW' and provide a suggested name."
-                    "Use the 'post_response' tool to format your response with the following structure: "
-                    "'fraud_type': string, 'explanation': string, 'new_type_name': string?"
-                ),
-                HumanMessagePromptTemplate.from_template(
-                    """Classify this fraud pattern:
+        self.prompt = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(
+                """You are a fraud classification expert. Classify the provided fraud pattern into known categories.
+                If it's a new type, set fraud_type as 'NEW' and provide a suggested name in new_type_name.
+                Provide a clear explanation for your classification."""
+            ),
+            HumanMessagePromptTemplate.from_template(
+                """Classify this fraud pattern:
                 Description: {description}
                 
                 Known fraud types: {known_types}"""
-                ),
-            ]
-        )
+            )
+        ])
 
     def classify(self, pattern_description: str) -> FraudTypeOutput:
         response = self.llm.invoke(
@@ -176,36 +174,30 @@ class FraudTypeAgent(BaseAgent):
                 known_types=", ".join(self.type_registry.get_types()),
             )
         )
-        print("RESPONSE FROM FRAUDTYPEAGENT", response)
-        return self._validate_and_parse_response(response.content)
-
+        return self._validate_and_parse_response(response)
 
 class SummaryAgent(BaseAgent):
-
     output_model = FraudSummaryOutput
 
     def __init__(self, llm: ChatOpenAI):
         super().__init__(llm)
-        self.prompt = ChatPromptTemplate.from_messages(
-            [
-                SystemMessagePromptTemplate.from_template(
-                    "You are a fraud prevention expert."
-                    "Generate a clear, abstract, and concise summary of this fraud analysis."
-                    "Also, provide brief warning signs and precautions to prevent similar frauds."
-                    "Use the 'post_response' tool to format your response with the following structure: "
-                    "'summary': string, 'warning_signs': [string], 'precautions': [string]"
-                ),
-                HumanMessagePromptTemplate.from_template(
-                    """Generate a clear, concise summary of this fraud analysis:
+        self.prompt = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(
+                """You are a fraud prevention expert.
+                Generate a clear, abstract, and concise summary of this fraud analysis.
+                Include specific warning signs and practical precautions to prevent similar frauds."""
+            ),
+            HumanMessagePromptTemplate.from_template(
+                """Generate a clear, concise summary of this fraud analysis:
                 {analysis}"""
-                ),
-            ]
-        )
+            )
+        ])
 
     def summarize(self, analysis: Dict) -> FraudSummaryOutput:
-        response = self.llm.invoke(self.prompt.format_messages(analysis=analysis))
-        print("RESPONSE FROM SUMMARYAGENT", response)
-        return self._validate_and_parse_response(response.content)
+        response = self.llm.invoke(
+            self.prompt.format_messages(analysis=analysis)
+        )
+        return self._validate_and_parse_response(response)
 
 
 # Modified workflow creation function
