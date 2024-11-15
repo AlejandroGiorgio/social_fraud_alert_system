@@ -33,9 +33,9 @@ class EmbeddingStorage:
 class FraudTypeRegistry:
     """Registry for managing known fraud types."""
     
-    def __init__(self, storage_path: str = "data/fraud_types.json"):
+    def __init__(self, storage_path: str = "data/fraud_types/fraud_types.json"):
         self.storage_path = storage_path
-        self.known_types = self._load_types()
+        self.known_types = self._load_types()["fraud_types"]
         
     def _load_types(self) -> List[str]:
         """Load known fraud types from storage."""
@@ -48,7 +48,8 @@ class FraudTypeRegistry:
     def save_types(self):
         """Save current fraud types to storage."""
         with open(self.storage_path, 'w') as f:
-            json.dump(self.known_types, f)
+            known_types = {"fraud_types": self.known_types}
+            json.dump(known_types, f)
             
     def add_type(self, fraud_type: str):
         """Add a new fraud type if not already known."""
