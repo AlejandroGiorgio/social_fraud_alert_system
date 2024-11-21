@@ -24,6 +24,7 @@ class FraudAnalysis(BaseModel):
     explanation: str
     similar_cases: List[str]
     timestamp: datetime
+    new_type_name: Optional[str] = None
 
 
 # Existing State and Input models
@@ -36,6 +37,7 @@ class CuratorState(BaseModel):
     fraud_type: Optional[Dict] = None
     final_summary: Optional[str] = None
     is_fraud: bool = False
+    new_type_name: Optional[str] = None
 
 
 class TextInput(BaseModel):
@@ -230,6 +232,9 @@ def create_curator_graph(
         except Exception as e:
             raise ValueError(f"Error al validar el resultado de FraudTypeAgent: {e}")
         state.fraud_type = result_model.model_dump()
+        if state.fraud_type["fraud_type"] == "NEW":
+            state.new_type_name = state.fraud_type["new_type_name"]
+        print("State after classify: ", state)
         return state.model_dump()
 
 
@@ -246,6 +251,7 @@ def create_curator_graph(
             result_model = FraudSummaryOutput.model_validate(result)
         except Exception as e:
             raise ValueError(f"Error al validar el resultado de SummaryAgent: {e}")
+        print(state)
         state.final_summary = result_model.summary
         return state.model_dump()
 
@@ -317,6 +323,7 @@ class CuratorAgent:
                 or final_state.pattern_analysis["reasoning"],
                 similar_cases=similar_cases,
                 timestamp=datetime.now(),
+                new_type_name=final_state.new_type_name,
             )
 
         return FraudAnalysis(
