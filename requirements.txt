@@ -1,9 +1,10 @@
 # Core dependencies
 langchain-core
+langchain-community
 langgraph
-sentence-transformers
 numpy
 pydantic
+faiss-cpu
 
 # LLM and embeddings
 requests
