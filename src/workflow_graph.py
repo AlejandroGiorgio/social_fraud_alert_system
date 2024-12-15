@@ -37,10 +37,10 @@ class WorkflowState(BaseModel):
 
 class FraudDetectionConfig(BaseModel):
     """Configuration for the fraud detection workflow."""
-
-    similarity_threshold: float = 0.85
+    similarity_threshold: float = 0.85  # Umbral para considerar casos similares
     min_similar_cases: int = 3
-    top_k_similar: int = 5  # Nuevo parámetro para FAISS
+    top_k_similar: int = 5  # Parámetro para FAISS
+    auto_fraud_threshold: float = 0.2  # Si el promedio es menor que esto, es fraude automático
 
 
 def create_workflow(
@@ -76,6 +76,7 @@ def create_workflow(
             raise
 
     def encode(state: dict) -> dict:
+    
         """Find similar cases using FAISS."""
         try:
             state = WorkflowState.model_validate(state)
@@ -88,19 +89,51 @@ def create_workflow(
                 state.text_input.text, k=config.top_k_similar
             )
 
-            # Filtrar casos por umbral de similitud
+            # Calcular promedio de similaridad de los primeros 3 casos (o menos si no hay suficientes)
+            if similar_cases:
+                top_cases = similar_cases[:min(3, len(similar_cases))]
+                avg_similarity = sum(case["score"] for case in top_cases) / len(top_cases)
+
+                print(f"Average similarity: {avg_similarity}")
+
+                # Si la similaridad promedio es muy baja (casos muy similares en FAISS)
+                if avg_similarity <= config.auto_fraud_threshold and similar_cases:
+                    print("Auto-fraud detected")
+                    # Siempre usar el caso más similar (menor score) para el fraud_type
+                    most_similar_case = min(similar_cases, key=lambda x: x["score"])
+
+                    print(f"Most similar case: {most_similar_case}")
+
+                    workflow_state = WorkflowState(
+                        messages=state.messages,
+                        text_input=state.text_input,
+                        similar_cases=similar_cases,
+                        analysis=FraudAnalysis(
+                            is_fraud=True,
+                            fraud_type=most_similar_case["metadata"]["fraud_type"],
+                            explanation=f"Automatic classification based on similarity with case showing fraud type: {most_similar_case['metadata']['fraud_type']}",
+                            similar_cases=[case["metadata"]["text"] for case in similar_cases],
+                            timestamp=datetime.now().isoformat(),
+                            new_type_name=None
+                        ),
+                        should_alert=True
+                    )
+                    workflow_state.prepare_for_serialization()
+                    return workflow_state.model_dump()
+
+            # Filtrar casos por umbral de similaridad para el curator
             similar_cases = [
                 case
                 for case in similar_cases
-                if case["score"] >= config.similarity_threshold
+                if case["score"] <= config.similarity_threshold
             ]
 
             workflow_state = WorkflowState(
-            messages=state.messages,
-            text_input=state.text_input,
-            similar_cases=similar_cases,
-            should_alert=False,
-        )
+                messages=state.messages,
+                text_input=state.text_input,
+                similar_cases=similar_cases,
+                should_alert=False,
+            )
             workflow_state.prepare_for_serialization()
             return workflow_state.model_dump()
         except Exception as e:
@@ -122,8 +155,6 @@ def create_workflow(
                 case["metadata"].get("text", "") for case in (state.similar_cases or [])
             ]
 
-            print(f"Similar cases: {similar_texts}")
-
             analysis = curator.analyze_case(curator_input, similar_texts)
 
             # Almacenar en FAISS si es fraude
@@ -134,7 +165,7 @@ def create_workflow(
                     state.text_input.text,
                     metadata={
                         "text": state.text_input.text,
-                        "fraud_type": analysis.fraud_type,
+                        "fraud_type": analysis.fraud_type if analysis.fraud_type != "NEW" else state.new_type_name,
                         "case_id": case_id,
                     },
                 )
@@ -154,6 +185,28 @@ def create_workflow(
             print(f"Curation error: {e}")
             raise
 
+    def should_use_curator(state: dict) -> str:
+        """
+        Determina si el caso debe ser procesado por el curator o finalizar el flujo.
+        Returns:
+            str: "curate" si debe usar el curator, END si debe finalizar el flujo
+        """
+        try:
+            state = WorkflowState.model_validate(state)
+
+            # Si no hay análisis previo (no fue clasificado automáticamente), usar curator
+            if not state.analysis:
+                return "curate"
+
+            # Si ya fue clasificado como fraude automáticamente, terminar el flujo
+            if state.analysis and state.analysis.is_fraud:
+                return END
+
+            return "curate"
+        except Exception as e:
+            print(f"Should use curator error: {e}")
+            raise
+
     # Create graph
     workflow = StateGraph(WorkflowState)
 
@@ -162,7 +215,14 @@ def create_workflow(
     workflow.add_node("curate", curate)
 
     workflow.add_edge("preprocess", "encode")
-    workflow.add_edge("encode", "curate")
+    workflow.add_conditional_edges(
+        "encode",
+        should_use_curator,
+        {
+            "curate": "curate",
+            END: END
+        }
+    )
     workflow.add_edge("curate", END)
 
     workflow.set_entry_point("preprocess")

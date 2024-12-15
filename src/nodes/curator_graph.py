@@ -128,24 +128,26 @@ class PatternAnalysisAgent(BaseAgent):
         super().__init__(llm)
         self.prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(
-                """You are a fraud detection expert. Analyze the provided text for potential fraud patterns.
-                Your analysis should determine:
-                - If the case is fraud (is_fraud)
-                - The specific patterns detected (patterns)
-                - A clear reasoning explaining your determination (reasoning)"""
+                "You are a experienced fraud analyst. " 
+                "You will be presented with a case"
+                "Your task is to determine if the case presented to you is a potential fraud on not."
+                "In order to do this, you will need to analyze the text for potential fraud patterns and provide a clear explanation of your reasoning."
+                "If you believe the case is a fraud, set is_fraud to True, provide a list of potential fraud patterns and a clear explanation of your reasoning."
+                "If you believe the case is not a fraud, set is_fraud to False and provide a clear explanation of your reasoning."
+                "You only classify the case as fraud there are clear fraud patterns present that imply an illegal activity."
+                "If the activity is unethical but not illegal, do not classify it as fraud."
+                "Customer-seller active disputes with no deception, mistreatment, or other unethical behavior are not considered fraud."
+                "If you dont have enough information to make a decision, set is_fraud to False and provide an explanation of why you are unsure"
             ),
             HumanMessagePromptTemplate.from_template(
                 """Analyze this text for potential fraud patterns:
-                Text: {text}
-                
-                Similar cases for reference:
-                {similar_cases}"""
+                Text: {text}"""
             )
         ])
 
-    def analyze(self, text: str, similar_cases: List[str]) -> PatternAnalysisOutput:
+    def analyze(self, text: str) -> PatternAnalysisOutput:
         response = self.llm.invoke(
-            self.prompt.format_messages(text=text, similar_cases=similar_cases)
+            self.prompt.format_messages(text=text)
         )
         return self._validate_and_parse_response(response)
 
@@ -158,7 +160,8 @@ class FraudTypeAgent(BaseAgent):
         self.prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(
                 """You are a fraud classification expert. Classify the provided fraud pattern into known categories.
-                If it's a new type, set fraud_type as 'NEW' and provide a suggested name in new_type_name.
+                Always try to classify the case into one of the known fraud types in the registry first.
+                If the pattern does not match any known types, set fraud_type as 'NEW' and provide a suggested name in new_type_name.
                 Provide a clear explanation for your classification."""
             ),
             HumanMessagePromptTemplate.from_template(
@@ -214,7 +217,7 @@ def create_curator_graph(
     # Node functions that use the agents
     def analyze_patterns(state: Dict) -> Dict:
         state = CuratorState.model_validate(state)
-        result = pattern_agent.analyze(state.text, state.similar_cases)
+        result = pattern_agent.analyze(state.text)
         try:
             result_model = PatternAnalysisOutput.model_validate(result)
         except Exception as e:
@@ -236,7 +239,6 @@ def create_curator_graph(
             state.new_type_name = state.fraud_type["new_type_name"]
         print("State after classify: ", state)
         return state.model_dump()
-
 
     def generate_summary(state: Dict) -> Dict:
         state = CuratorState.model_validate(state)
