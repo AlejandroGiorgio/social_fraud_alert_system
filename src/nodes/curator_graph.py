@@ -62,9 +62,15 @@ class FraudSummaryOutput(BaseModel):
     warning_signs: List[str]
     precautions: List[str]
 
+
 class PostResponseInput(BaseModel):
-    content: Dict[str, Any] = Field(..., description="The content to validate and format")
-    model: Type[BaseModel] = Field(..., description="The Pydantic model to validate against")
+    content: Dict[str, Any] = Field(
+        ..., description="The content to validate and format"
+    )
+    model: Type[BaseModel] = Field(
+        ..., description="The Pydantic model to validate against"
+    )
+
 
 def post_response(input_data: PostResponseInput) -> Dict:
     """Tool for agents to post their responses in the correct format."""
@@ -74,13 +80,13 @@ def post_response(input_data: PostResponseInput) -> Dict:
 # Agent base class with retry logic
 class BaseAgent:
     output_model: Type[BaseModel] = None
-    
+
     def __init__(self, llm: ChatOpenAI):
         if not self.output_model:
             raise ValueError("output_model must be defined in child class")
-            
+
         self.llm = llm
-        
+
         # Definir la tool con el schema exacto
         self.tools = [
             {
@@ -88,37 +94,38 @@ class BaseAgent:
                 "function": {
                     "name": "post_response",
                     "description": "Format and validate the response according to the required schema",
-                    "parameters": self.output_model.model_json_schema()
-                }
+                    "parameters": self.output_model.model_json_schema(),
+                },
             }
         ]
-        
+
         # Configurar el LLM para forzar el uso de la función post_response
         self.llm = llm.bind(
             tools=self.tools,
-            tool_choice={"type": "function", "function": {"name": "post_response"}}
+            tool_choice={"type": "function", "function": {"name": "post_response"}},
         )
 
     def _validate_and_parse_response(self, response: BaseMessage) -> Dict:
         """Valida y parsea la respuesta del LLM."""
         try:
             # La respuesta ahora siempre vendrá en tool_calls
-            if not response.additional_kwargs.get('tool_calls'):
+            if not response.additional_kwargs.get("tool_calls"):
                 raise ValueError("No tool calls found in response")
-                
+
             # Obtener los argumentos de la función
-            function_args = json.loads(response.additional_kwargs['tool_calls'][0]['function']['arguments'])
-            
+            function_args = json.loads(
+                response.additional_kwargs["tool_calls"][0]["function"]["arguments"]
+            )
+
             # Validar con el modelo Pydantic
             validated_data = self.output_model.model_validate(function_args)
-            
+
             return validated_data.model_dump()
-            
+
         except Exception as e:
             print(f"Error en la validación: {str(e)}")
             print(f"Respuesta original: {response}")
             raise e
-
 
 
 class PatternAnalysisAgent(BaseAgent):
@@ -126,30 +133,34 @@ class PatternAnalysisAgent(BaseAgent):
 
     def __init__(self, llm: ChatOpenAI):
         super().__init__(llm)
-        self.prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(
-                "You are a experienced fraud analyst. " 
-                "You will be presented with a case"
-                "Your task is to determine if the case presented to you is a potential fraud on not."
-                "In order to do this, you will need to analyze the text for potential fraud patterns and provide a clear explanation of your reasoning."
-                "If you believe the case is a fraud, set is_fraud to True, provide a list of potential fraud patterns and a clear explanation of your reasoning."
-                "If you believe the case is not a fraud, set is_fraud to False and provide a clear explanation of your reasoning."
-                "You only classify the case as fraud there are clear fraud patterns present that imply an illegal activity."
-                "If the activity is unethical but not illegal, do not classify it as fraud."
-                "Customer-seller active disputes with no deception, mistreatment, or other unethical behavior are not considered fraud."
-                "If you dont have enough information to make a decision, set is_fraud to False and provide an explanation of why you are unsure"
-            ),
-            HumanMessagePromptTemplate.from_template(
-                """Analyze this text for potential fraud patterns:
+        self.prompt = ChatPromptTemplate.from_messages(
+            [
+                SystemMessagePromptTemplate.from_template(
+                    "You are an experienced fraud analyst with expertise in pentesting.\n"
+                    "You will be presented with a case that has been sent to you by a concerned user.\n"
+                    "Keep in mind that the user does not have technical knowledge and may be misinformed.\n"
+                    "Your task is to determine if the case presented to you is really a potential fraud or not.\n"
+                    "In order to do this, you will need to analyze the text for potential fraud patterns and provide a clear explanation of your reasoning.\n"
+                    "If you believe the case is a fraud, set is_fraud to True, provide a list of potential fraud patterns, and a clear explanation of your reasoning.\n"
+                    "If you believe the case is not a fraud, set is_fraud to False and provide a clear explanation of your reasoning.\n"
+                    "You only classify the case as fraud if there are clear fraud patterns present that imply an illegal activity.\n"
+                    "Customer-seller active disputes with no deception, mistreatment, or other unethical behavior are not considered fraud.\n"
+                    "If the case describes a scenario that is not technically possible or is based on misinformation or misunderstanding (e.g., scientifically implausible hacking methods), set is_fraud to False.\n"
+                    "Provide an explanation of why the scenario is invalid, and, if relevant, indicate that it may stem from public misconception.\n"
+                    "If you don't have enough information to make a decision, set is_fraud to False and provide an explanation of why you are unsure.\n"
+                    "if you are unsure of the technical plausible of the scenario, set is_fraud to False and provide an explanation of why you are unsure."
+                ),
+                HumanMessagePromptTemplate.from_template(
+                    """Analyze this text for potential fraud patterns:
                 Text: {text}"""
-            )
-        ])
+                ),
+            ]
+        )
 
     def analyze(self, text: str) -> PatternAnalysisOutput:
-        response = self.llm.invoke(
-            self.prompt.format_messages(text=text)
-        )
+        response = self.llm.invoke(self.prompt.format_messages(text=text))
         return self._validate_and_parse_response(response)
+
 
 class FraudTypeAgent(BaseAgent):
     output_model = FraudTypeOutput
@@ -157,51 +168,63 @@ class FraudTypeAgent(BaseAgent):
     def __init__(self, llm: ChatOpenAI, type_registry: "FraudTypeRegistry"):
         super().__init__(llm)
         self.type_registry = type_registry
-        self.prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(
-                """You are a fraud classification expert. Classify the provided fraud pattern into known categories.
-                Always try to classify the case into one of the known fraud types in the registry first.
-                If the pattern does not match any known types, set fraud_type as 'NEW' and provide a suggested name in new_type_name.
-                Provide a clear explanation for your classification."""
-            ),
-            HumanMessagePromptTemplate.from_template(
-                """Classify this fraud pattern:
+        self.prompt = ChatPromptTemplate.from_messages(
+            [
+                SystemMessagePromptTemplate.from_template(
+                    "You are a fraud expert specialized in pattern recognition and taxonomy.\n"
+                    "Your task is to classify fraud cases into broad, reusable categories that capture the fundamental nature of the fraud, not its specific implementation details.\n"
+                    "Focus on the core deceptive mechanism, not surface-level details.\n"
+                    "Group cases by their underlying pattern rather than specific channels or methods used.\n"
+                    "If suggesting a new type, ensure it represents a truly novel deceptive mechanism rather than a variation of an existing type.\n"
+                    "Consider if minor variations could fit within an existing broader category.\n"
+                    "A new type should only be created if the fundamental fraud pattern is distinct from all existing types.\n"
+                    "First, attempt to classify the case under existing types in the registry.\n"
+                    "Only create a new type if the core deceptive mechanism is fundamentally different from all known types.\n"
+                    "Provide the following outputs:\n"
+                    "- fraud_type: Use existing type or 'NEW'.\n"
+                    "- new_type_name: Only if fraud_type is 'NEW', describe the core deceptive pattern in upper case.\n"
+                    "- explanation: Justify classification focusing on the fundamental fraud mechanics.\n"
+                ),
+                HumanMessagePromptTemplate.from_template(
+                    """Classify this fraud pattern:
                 Description: {description}
                 
                 Known fraud types: {known_types}"""
-            )
-        ])
+                ),
+            ]
+        )
 
-    def classify(self, pattern_description: str) -> FraudTypeOutput:
+    def classify(self, pattern_description: str, similar_cases:list) -> FraudTypeOutput:
         response = self.llm.invoke(
             self.prompt.format_messages(
                 description=pattern_description,
-                known_types=", ".join(self.type_registry.get_types()),
+                known_types=similar_cases,
             )
         )
         return self._validate_and_parse_response(response)
+
 
 class SummaryAgent(BaseAgent):
     output_model = FraudSummaryOutput
 
     def __init__(self, llm: ChatOpenAI):
         super().__init__(llm)
-        self.prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(
-                """You are a fraud prevention expert.
+        self.prompt = ChatPromptTemplate.from_messages(
+            [
+                SystemMessagePromptTemplate.from_template(
+                    """You are a fraud prevention expert.
                 Generate a clear, abstract, and concise summary of this fraud analysis.
                 Include specific warning signs and practical precautions to prevent similar frauds."""
-            ),
-            HumanMessagePromptTemplate.from_template(
-                """Generate a clear, concise summary of this fraud analysis:
+                ),
+                HumanMessagePromptTemplate.from_template(
+                    """Generate a clear, concise summary of this fraud analysis:
                 {analysis}"""
-            )
-        ])
+                ),
+            ]
+        )
 
     def summarize(self, analysis: Dict) -> FraudSummaryOutput:
-        response = self.llm.invoke(
-            self.prompt.format_messages(analysis=analysis)
-        )
+        response = self.llm.invoke(self.prompt.format_messages(analysis=analysis))
         return self._validate_and_parse_response(response)
 
 
@@ -221,15 +244,16 @@ def create_curator_graph(
         try:
             result_model = PatternAnalysisOutput.model_validate(result)
         except Exception as e:
-            raise ValueError(f"Error al validar el resultado de PatternAnalysisAgent: {e}")
+            raise ValueError(
+                f"Error al validar el resultado de PatternAnalysisAgent: {e}"
+            )
         state.pattern_analysis = result_model.model_dump()  # Serializar para el estado
         state.is_fraud = result_model.is_fraud
         return state.model_dump()
 
-
     def classify_type(state: Dict) -> Dict:
         state = CuratorState.model_validate(state)
-        result = type_agent.classify(state.pattern_analysis)
+        result = type_agent.classify(state.pattern_analysis, state.similar_cases)
         try:
             result_model = FraudTypeOutput.model_validate(result)
         except Exception as e:
@@ -256,7 +280,6 @@ def create_curator_graph(
         print(state)
         state.final_summary = result_model.summary
         return state.model_dump()
-
 
     # Add nodes
     workflow.add_node("analyze_patterns", analyze_patterns)

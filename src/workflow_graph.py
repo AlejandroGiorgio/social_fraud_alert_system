@@ -152,8 +152,12 @@ def create_workflow(
 
             # Extraer solo los textos de los casos similares para el análisis
             similar_texts = [
-                case["metadata"].get("text", "") for case in (state.similar_cases or [])
+                case["metadata"].get("fraud_type", "") for case in (state.similar_cases or [])
             ]
+
+            similar_texts = [text for text in similar_texts if type(text) == str]
+
+            print(f"Similar texts: {similar_texts}")
 
             analysis = curator.analyze_case(curator_input, similar_texts)
 
