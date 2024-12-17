@@ -20,7 +20,7 @@ class FraudAnalysis(BaseModel):
     """Data class to store fraud analysis results."""
 
     is_fraud: bool
-    fraud_type: Optional[str]
+    fraud_type: str
     explanation: str
     similar_cases: List[str]
     timestamp: datetime
@@ -85,46 +85,18 @@ class BaseAgent:
         if not self.output_model:
             raise ValueError("output_model must be defined in child class")
 
-        self.llm = llm
-
-        # Definir la tool con el schema exacto
-        self.tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "post_response",
-                    "description": "Format and validate the response according to the required schema",
-                    "parameters": self.output_model.model_json_schema(),
-                },
-            }
-        ]
-
-        # Configurar el LLM para forzar el uso de la función post_response
-        self.llm = llm.bind(
-            tools=self.tools,
-            tool_choice={"type": "function", "function": {"name": "post_response"}},
-        )
+        # Configure LLM with structured output validation using the output_model
+        self.llm = llm.with_structured_output(self.output_model)
 
     def _validate_and_parse_response(self, response: BaseMessage) -> Dict:
-        """Valida y parsea la respuesta del LLM."""
+        """Assume response is already validated and parsed by the LLM."""
         try:
-            # La respuesta ahora siempre vendrá en tool_calls
-            if not response.additional_kwargs.get("tool_calls"):
-                raise ValueError("No tool calls found in response")
-
-            # Obtener los argumentos de la función
-            function_args = json.loads(
-                response.additional_kwargs["tool_calls"][0]["function"]["arguments"]
-            )
-
-            # Validar con el modelo Pydantic
-            validated_data = self.output_model.model_validate(function_args)
-
-            return validated_data.model_dump()
+            # Directly return the response as it is already structured
+            return response
 
         except Exception as e:
-            print(f"Error en la validación: {str(e)}")
-            print(f"Respuesta original: {response}")
+            print(f"Error in processing response: {str(e)}")
+            print(f"Original response: {response}")
             raise e
 
 
@@ -172,18 +144,16 @@ class FraudTypeAgent(BaseAgent):
             [
                 SystemMessagePromptTemplate.from_template(
                     "You are a fraud expert specialized in pattern recognition and taxonomy.\n"
-                    "Your task is to classify fraud cases into broad, reusable categories that capture the fundamental nature of the fraud, not its specific implementation details.\n"
-                    "Focus on the core deceptive mechanism, not surface-level details.\n"
-                    "Group cases by their underlying pattern rather than specific channels or methods used.\n"
-                    "If suggesting a new type, ensure it represents a truly novel deceptive mechanism rather than a variation of an existing type.\n"
-                    "Consider if minor variations could fit within an existing broader category.\n"
-                    "A new type should only be created if the fundamental fraud pattern is distinct from all existing types.\n"
-                    "First, attempt to classify the case under existing types in the registry.\n"
-                    "Only create a new type if the core deceptive mechanism is fundamentally different from all known types.\n"
+                    "Your primary task is to classify fraud cases into broad, reusable categories that capture the fundamental nature of the fraud, avoiding over-segmentation.\n"
+                    "Focus on identifying the core deceptive mechanism that defines the fraud, rather than its specific implementation details or context.\n"
+                    "Prioritize grouping cases by their underlying pattern, emphasizing broad and inclusive categories over narrow and specific ones.\n"
+                    "When encountering minor variations within a fraud category, consider whether these can be subsumed under an existing broader category.\n"
+                    "Suggest a new type only if it represents a genuinely novel and fundamentally distinct deceptive mechanism from all existing types.\n"
+                    "Before proposing a new type, exhaust all possibilities of fitting the case into existing categories, recognizing that minor semantic differences do not necessarily warrant a new type.\n"
                     "Provide the following outputs:\n"
-                    "- fraud_type: Use existing type or 'NEW'.\n"
+                    "- fraud_type: Use an existing type whenever possible; use 'NEW' only if absolutely necessary.\n"
                     "- new_type_name: Only if fraud_type is 'NEW', describe the core deceptive pattern in upper case.\n"
-                    "- explanation: Justify classification focusing on the fundamental fraud mechanics.\n"
+                    "- explanation: Justify classification focusing on the core deceptive mechanism, emphasizing the rationale for not creating unnecessary new categories.\n"
                 ),
                 HumanMessagePromptTemplate.from_template(
                     """Classify this fraud pattern:
@@ -194,7 +164,9 @@ class FraudTypeAgent(BaseAgent):
             ]
         )
 
-    def classify(self, pattern_description: str, similar_cases:list) -> FraudTypeOutput:
+    def classify(
+        self, pattern_description: str, similar_cases: list
+    ) -> FraudTypeOutput:
         response = self.llm.invoke(
             self.prompt.format_messages(
                 description=pattern_description,
@@ -339,11 +311,7 @@ class CuratorAgent:
         if final_state.is_fraud:
             return FraudAnalysis(
                 is_fraud=True,
-                fraud_type=(
-                    final_state.fraud_type["fraud_type"]
-                    if final_state.fraud_type
-                    else None
-                ),
+                fraud_type=final_state.fraud_type["fraud_type"],
                 explanation=final_state.final_summary
                 or final_state.pattern_analysis["reasoning"],
                 similar_cases=similar_cases,
@@ -353,7 +321,7 @@ class CuratorAgent:
 
         return FraudAnalysis(
             is_fraud=False,
-            fraud_type=None,
+            fraud_type="NO_FRAUD",
             explanation=final_state.pattern_analysis["reasoning"],
             similar_cases=similar_cases,
             timestamp=datetime.now(),

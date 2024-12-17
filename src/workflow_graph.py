@@ -103,6 +103,7 @@ def create_workflow(
                     most_similar_case = min(similar_cases, key=lambda x: x["score"])
 
                     print(f"Most similar case: {most_similar_case}")
+                    print(f"Similar cases: {similar_cases}")
 
                     workflow_state = WorkflowState(
                         messages=state.messages,
@@ -112,7 +113,10 @@ def create_workflow(
                             is_fraud=True,
                             fraud_type=most_similar_case["metadata"]["fraud_type"],
                             explanation=f"Automatic classification based on similarity with case showing fraud type: {most_similar_case['metadata']['fraud_type']}",
-                            similar_cases=[case["metadata"]["text"] for case in similar_cases],
+                            similar_cases=[
+                            case["metadata"].get("text", "") for case in similar_cases
+                            if "text" in case["metadata"] and isinstance(case["metadata"]["text"], str)
+                        ],
                             timestamp=datetime.now().isoformat(),
                             new_type_name=None
                         ),
